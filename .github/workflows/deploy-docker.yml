@@ -15,6 +15,10 @@ on:
         required: false
         type: string
         default: '.'
+    secrets:
+      TARS_APP_UPDATE_WEBHOOK_SECRET:
+        required: false
+        description: 'HMAC secret for the tars app-update webhook; when set, tars redeploys the app seconds after the push instead of on the polling fallback.'
 
 jobs:
   build:
@@ -22,21 +26,21 @@ jobs:
     permissions:
       contents: read
       packages: write
-    
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
-      
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v2
-      
+
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v2
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      
+
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v4
@@ -45,7 +49,7 @@ jobs:
           tags: |
             type=sha,prefix=
             type=raw,value=latest
-      
+
       - name: Build and push Docker image
         uses: docker/build-push-action@v4
         with:
@@ -56,7 +60,17 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=registry,ref=ghcr.io/${{ github.repository }}/${{ inputs.app_name }}:buildcache
           cache-to: type=registry,ref=ghcr.io/${{ github.repository }}/${{ inputs.app_name }}:buildcache,mode=max
-      
+
       - name: Image pushed
         run: |
           echo "✔ Image pushed to ghcr.io/${{ github.repository }}/${{ inputs.app_name }}:latest"
+
+      - name: Trigger tars app update
+        if: ${{ secrets.TARS_APP_UPDATE_WEBHOOK_SECRET != '' }}
+        run: |
+          ts=$(date +%s)000
+          body='{"app":"${{ inputs.app_name }}"}'
+          sig=$(printf '%s%s' "$body" "$ts" | openssl dgst -sha256 -hmac "${{ secrets.TARS_APP_UPDATE_WEBHOOK_SECRET }}" -r | cut -d' ' -f1)
+          curl -fsS -X POST https://theor.net/.theor/app-update \
+            -H "X-Update-Signature: sha256=$sig,t=$ts" \
+            -H 'Content-Type: application/json' -d "$body"
